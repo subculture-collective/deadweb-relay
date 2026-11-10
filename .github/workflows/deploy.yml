@@ -1,0 +1,129 @@
+name: Deploy
+run-name: Deploy ${{ github.sha }}
+
+# Deploys the main-branch relay to Dozor. The job joins the tailnet as
+# tag:github-ci (Tailscale OAuth client in the TS_OAUTH_* organization secrets),
+# then uses this repository's deploy key, which Dozor accepts only from tailnet
+# addresses and only for the deadweb-relay fleet-deploy receiver. The receiver
+# backs up and restore-checks the relay data before it deploys.
+'on':
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  # Never cancel a run that may be mid-deployment.
+  cancel-in-progress: false
+
+env:
+  TARGET: onnwee@100.97.213.1
+  DEPLOY_REVISION: ${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Build relay and deploy Dozor
+    if: github.repository == 'subculture-collective/deadweb-relay' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - name: Join the tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci
+          version: latest
+      - name: Prepare the deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMELAB_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.HOMELAB_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/deploy"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/deploy/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy/known_hosts"
+      - name: Reuse an already accepted relay artifact
+        id: artifact
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+          d="$RUNNER_TEMP/deploy"
+          ssh_args=(-F /dev/null -i "$d/key" -o ControlPath=none -o ControlMaster=no -o BatchMode=yes -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$d/known_hosts" -o ConnectTimeout=15 "$TARGET")
+          # The receiver deploys only Gitea's current main. Kvant copies GitHub
+          # to Gitea every minute, so wait while the revision has not arrived.
+          for attempt in $(seq 1 20); do
+            # shellcheck disable=SC2029
+            if ssh "${ssh_args[@]}" "artifact $DEPLOY_REVISION relay" > "$d/artifact.json" 2> "$d/err"; then break; fi
+            if grep -q "no longer the current main" "$d/err" && [ "$attempt" -lt 20 ]; then
+              echo "Gitea has not received $DEPLOY_REVISION yet; waiting 30 s ($attempt/20)"; sleep 30; continue
+            fi
+            cat "$d/err" >&2; exit 1
+          done
+          python3 - "$d/artifact.json" "$GITHUB_OUTPUT" <<'PYCODE'
+          import json, re, sys
+          from pathlib import Path
+          info = json.loads(Path(sys.argv[1]).read_text())
+          available = info.get("available") is True
+          if available:
+              assert re.fullmatch(r"sha256:[0-9a-f]{64}", info.get("image", ""))
+          with Path(sys.argv[2]).open("a") as output:
+              output.write("available=" + str(available).lower() + "\n")
+          PYCODE
+      - name: Build deployable images from the verified revision
+        if: steps.artifact.outputs.available != 'true'
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+          image="fleet-deploy/deadweb-relay/relay:$DEPLOY_REVISION"
+          # The fleet-deploy receiver identifies the application by this Gitea source label.
+          docker build --label "org.opencontainers.image.revision=$DEPLOY_REVISION" \
+            --label "org.opencontainers.image.source=https://git.subcult.tv/subculture-collective/deadweb-relay" -t "$image" .
+          bash scripts/check-image.sh "$image"
+      - name: Back up, restore-check, deploy and verify public assets
+        env:
+          REUSE_ARTIFACT: ${{ steps.artifact.outputs.available }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+          d="$RUNNER_TEMP/deploy"
+          ssh_args=(-F /dev/null -i "$d/key" -o ControlPath=none -o ControlMaster=no -o BatchMode=yes -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$d/known_hosts" -o ConnectTimeout=15 "$TARGET")
+          ssh "${ssh_args[@]}" status
+          image="fleet-deploy/deadweb-relay/relay:$DEPLOY_REVISION"
+          if [[ "$REUSE_ARTIFACT" != true ]]; then
+            # shellcheck disable=SC2029
+            docker save "$image" | ssh "${ssh_args[@]}" "receive $DEPLOY_REVISION relay"
+          fi
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "deploy $DEPLOY_REVISION"
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "artifact $DEPLOY_REVISION relay" > "$d/artifact.json"
+          python3 - "$d/artifact.json" <<'PYCODE'
+          import json, re, sys
+          info = json.load(open(sys.argv[1]))
+          assert info["available"] is True
+          assert re.fullmatch(r"sha256:[0-9a-f]{64}", info["image"])
+          PYCODE
+          curl --fail --silent --show-error --retry 4 --retry-all-errors \
+            --max-time 30 https://www2.onnwee.me/ > "$d/live.html"
+          grep -q 'a SUBCULT project' "$d/live.html"
+          for asset in favicon.svg apple-touch-icon.png og.png mark.svg; do
+            curl --fail --silent --show-error --retry 4 --retry-all-errors \
+              --max-time 30 "https://www2.onnwee.me/static/brand/deadweb-relay/$asset" > "$d/asset"
+            cmp "web/static/brand/deadweb-relay/$asset" "$d/asset"
+          done
+          printf 'Live branding assets match the image source at %s\n' "$DEPLOY_REVISION"
+      - name: Remove the deploy key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/deploy"
