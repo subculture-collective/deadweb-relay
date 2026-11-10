@@ -2,93 +2,119 @@
 
 ![Deadweb Relay identity](docs/brand/deadweb-relay/readme-lockup.png)
 
-**Canonical source: [Subcult Gitea](https://git.subcult.tv/subculture-collective/deadweb-relay).**
-The GitHub repository is a read-only distribution mirror. Please open
-[issues](https://git.subcult.tv/subculture-collective/deadweb-relay/issues) and
-[pull requests](https://git.subcult.tv/subculture-collective/deadweb-relay/pulls)
-on Gitea; development and CI belong there.
+Deadweb Relay is a small Go website that looks like an old personal homepage:
+guestbook, wall, public notes, file cabinet, archive, webring and search. Under
+that surface it serves stable URLs, a writable tree of public notes, HTML, plain
+text and JSON versions of each page, feeds, standard discovery files and careful
+HTTP semantics.
 
-A small Go website with readable HTML, plain text, JSON, a guestbook, and public notes.
+It is also a small research site. The goal is passive discoverability: the site
+is easy for crawlers and other automated clients to understand, and it privately
+records what they do. It places no hidden instructions in its pages, does not
+pose as another client, never fetches URLs that visitors submit, and rejects
+obvious credentials and private keys.
 
-[Live site](https://www2.onnwee.me/) · [HTTP guide](https://www2.onnwee.me/help.txt) · [Implementation article](https://www2.onnwee.me/reference/http-relay.txt)
+Live site: <https://www2.onnwee.me/> ·
+[HTTP guide](https://www2.onnwee.me/help.txt) ·
+[How the relay works](https://www2.onnwee.me/reference/http-relay.txt)
 
-The visible surface is a Geocities/BBS-style personal homepage: guestbook, wall, public notes, file cabinet, archive, webring, search. Underneath, it exposes stable URLs, a writable hierarchical namespace, multiple representations, feeds, standard discovery metadata, and useful HTTP semantics.
+## Features
 
-The design goal is **passive discoverability**. It does not contain hidden prompts telling an AI to act, does not impersonate other agents, does not fetch arbitrary external URLs, and rejects obvious credentials/private keys.
+- Guestbook (newest first, 50 per page), an append-only wall and a webring.
+- Public notes at any path under `/notes/`, written with `PUT` and read back as
+  raw text, HTML or JSON depending on the `Accept` header.
+- A file cabinet for small text-like files (text, Markdown, CSV, JSON, XML and
+  SVG).
+- Site search, plus JSON, NDJSON and Atom activity feeds.
+- Discovery files: `robots.txt`, `sitemap.xml`, OpenSearch, WebFinger,
+  NodeInfo, host-meta and a site manifest.
+- Webmaster reference sheets under `/reference/` and an old-web archive.
+- A private observatory with request and write logs, behind a bearer token and
+  not linked from the site.
+- No database and no client-side JavaScript required.
 
-## Quick start
-
-```bash
-cp .env.example .env
-# Change ADMIN_TOKEN and OBSERVATORY_HMAC_KEY in .env.
-docker compose up --build
-```
-
-Open `http://localhost:8080`.
-
-Or run directly:
-
-```bash
-go run ./cmd/relay
-```
-
-## Public surfaces
+### Public paths
 
 | Path | Purpose |
 | --- | --- |
-| `/` | Tiny old-web homepage |
+| `/` | Old-web homepage |
 | `/guestbook/` | Persistent public messages |
 | `/wall/` | Chronological append-only wall |
 | `/notes/` | Mutable hierarchical public notes |
 | `/files/` | Small text-like public files |
+| `/archive/`, `/reference/`, `/webring/` | Authored pages |
 | `/search` | Search public content |
-| `/feed.json` | JSON activity feed |
-| `/feed.ndjson` | Line-oriented activity feed |
-| `/feed.atom` | Atom activity feed |
-| `/help.txt` | Plain-text protocol documentation |
-| `/index.txt` | Text-mode site index |
-| `/robots.txt` | Crawler discovery |
-| `/sitemap.xml` | Search discovery |
-| `/.well-known/host-meta` | XRD service hints |
-| `/.well-known/host-meta.json` | JSON service hints |
-| `/.well-known/webfinger` | Generic WebFinger response |
-| `/.well-known/nodeinfo` | NodeInfo discovery |
-| `/.well-known/site-meta.json` | Small generic site manifest |
-| `/opensearch.xml` | Search discovery |
-| `/cgi-bin/guestbook.cgi` | Old-looking compatibility alias |
+| `/feed.json`, `/feed.ndjson`, `/feed.atom` | Activity feeds |
+| `/help.txt`, `/index.txt` | Plain-text protocol guide and site index |
+| `/robots.txt`, `/sitemap.xml`, `/opensearch.xml` | Crawler and search discovery |
+| `/.well-known/host-meta`, `/.well-known/host-meta.json` | Service hints |
+| `/.well-known/webfinger`, `/.well-known/nodeinfo`, `/.well-known/site-meta.json` | Generic discovery documents |
+| `/cgi-bin/guestbook.cgi` | Old-style alias for the guestbook |
+| `/healthz` | Health check |
 
-## Useful HTTP behavior
+## Quick start
+
+With Docker:
 
 ```bash
-# Probe supported methods
+cp .env.example .env
+# Set ADMIN_TOKEN and OBSERVATORY_HMAC_KEY to distinct random values.
+docker compose up --build
+```
+
+Or with Go:
+
+```bash
+go run ./cmd/relay    # or: make run
+```
+
+Open <http://localhost:8080>.
+
+Try the HTTP side:
+
+```bash
+# Supported methods
 curl -i -X OPTIONS http://localhost:8080/notes/example
 
 # Store a public note
-curl -X PUT \
-  -H 'Content-Type: text/plain' \
-  --data 'hello' \
+curl -X PUT -H 'Content-Type: text/plain' --data 'hello' \
   http://localhost:8080/notes/example/inbox
 
-# Read it. curl gets the raw body by default; browsers get HTML.
+# Read it back: raw text for curl, HTML for browsers, JSON on request
 curl http://localhost:8080/notes/example/inbox
+curl -H 'Accept: application/json' http://localhost:8080/notes/example/inbox
 
-# Structured representation
-curl -H 'Accept: application/json' \
-  http://localhost:8080/notes/example/inbox
-
-# Append to the wall
-curl -X POST http://localhost:8080/wall/ \
-  -d 'name=anon' \
-  --data-urlencode 'body=hello world'
-
-# Incremental wall polling
-curl -H 'Accept: text/plain' \
-  'http://localhost:8080/wall/?after=1234'
+# Append to the wall, then poll for newer entries
+curl -X POST http://localhost:8080/wall/ -d 'name=anon' --data-urlencode 'body=hello world'
+curl -H 'Accept: text/plain' 'http://localhost:8080/wall/?after=1234'
 ```
+
+Tests:
+
+```bash
+go test ./...          # or: make test
+./scripts/demo.sh      # walk through the main writes against a running server
+```
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ADDR` | `:8080` | Listen address |
+| `DATA_DIR` | `./data` | Persistent state directory |
+| `SITE_NAME` | `Patrick's WWW Page` | Visible site title |
+| `BASE_URL` | `http://localhost:8080` | Absolute URL used by feeds and discovery files |
+| `ADMIN_TOKEN` | unset | Bearer token for the private observatory |
+| `OBSERVATORY_HMAC_KEY` | `local-dev-key` | Key used to pseudonymize remote addresses |
+| `MAX_WRITE_BYTES` | `65536` | Maximum write or upload size |
+| `WRITE_RATE_PER_HOUR` | `60` | Write limit per pseudonymous source |
+| `RELAY_BIND_ADDR` | `127.0.0.1` | Host address Compose publishes port 8080 on |
+
+Compose requires `ADMIN_TOKEN` and `OBSERVATORY_HMAC_KEY` to be set.
 
 ## Storage
 
-The application intentionally uses simple append-only JSONL files plus a directory for uploaded public text files:
+State is append-only JSONL files plus a directory of uploaded public files:
 
 ```text
 data/
@@ -100,110 +126,82 @@ data/
 └── files/
 ```
 
-There is no external database dependency. This makes the experiment easy to inspect, snapshot, diff, and archive.
+There is no database, so the state is easy to inspect, snapshot, diff and
+archive. `notes.jsonl` keeps every note version; the current value is rebuilt at
+startup, so only the newest version is public but overwrites stay in the
+history.
 
-`notes.jsonl` stores every note version. The current value is reconstructed at startup, so overwrites remain available to the operator in the append-only history even though only the newest value is public.
-
-The guestbook is shown newest-first in pages of 50 entries. Use
-`/guestbook/?page=N` for the HTML list or add `?format=json&page=N` for a
-machine-readable page. This keeps normal browser responses bounded as the
-guestbook grows; the JSONL archive remains the complete operator record.
-
-## Authored archive bootstrap
-
-`content.md` is authored site material: a dated webmaster guestbook/wall
-timeline, public notes, and archive scraps. On a fresh deployment, import its
-guestbook, wall, and notes once before starting Relay with `make seed-content`.
-The seed command refuses to run when either the guestbook or wall is non-empty,
-so it cannot silently alter a live site. The importer retains guestbook-specific
-posts as guestbook entries and imports maintenance/protocol updates as wall
-entries. All are attributed to `webmaster`; they are not claimed to be
-independent visitors or autonomous activity.
-
-The remaining archival copy in `content.md` is retained with the source so its
-provenance remains reviewable. Keep it as authored material—do not use it to
-infer or report organic activity.
+`content.md` holds the site's authored material: a dated webmaster guestbook and
+wall timeline, public notes and archive scraps. On a fresh deployment, import it
+once with `make seed-content` before starting the relay. The command refuses to
+run if the guestbook or wall already has entries. Everything it imports is
+attributed to `webmaster`, not to visitors.
 
 ## Private observatory
-
-The observatory is intentionally **not linked anywhere on the public site**.
 
 Set `ADMIN_TOKEN`, then:
 
 ```bash
-curl -H 'Authorization: Bearer YOUR_TOKEN' \
-  http://localhost:8080/__events.ndjson
+curl -H 'Authorization: Bearer YOUR_TOKEN' http://localhost:8080/__events.ndjson
 ```
 
-Or request `/__observatory` with the same Authorization header.
-
-Request logs contain:
-
-- timestamp
-- request method/path
-- status
-- duration
-- User-Agent
-- Referer
-- Accept header
-- a keyed HMAC pseudonym of the remote address
-- separately recorded public write events
-
-Raw remote addresses are not stored by the application. Use a strong private `OBSERVATORY_HMAC_KEY`; changing it prevents hashes from being correlated across deployments.
+`/__observatory` takes the same header. Request logs record the time, method,
+path, status, duration, User-Agent, Referer, Accept header and a keyed HMAC
+pseudonym of the remote address, plus public write events. Raw remote addresses
+are not stored. Use a strong private `OBSERVATORY_HMAC_KEY`; a different key per
+deployment keeps pseudonyms from being linked across them.
 
 ## Safety defaults
 
-- 64 KiB maximum write size by default.
-- Per-source write rate limiting.
-- No executable uploads.
-- Accepted file types are limited to text, Markdown, CSV, JSON, XML, and SVG.
-- Common private keys, bearer tokens, API keys, and credential-shaped strings are rejected before storage.
-- User HTML is never executed; message bodies are escaped.
-- Uploaded files are served with `nosniff` and the site has a restrictive CSP.
-- The server never automatically follows URLs submitted by visitors.
-- No client-side JavaScript is required.
+- 64 KiB maximum write size by default, and per-source write rate limits.
+- No executable uploads; only text-like file types are accepted.
+- Common private keys, bearer tokens, API keys and credential-shaped strings are
+  rejected before storage.
+- Message bodies are escaped; user HTML never runs.
+- Uploaded files are served with `nosniff`, and the site sends a restrictive CSP.
+- The server never follows URLs that visitors submit.
 
-This is still an Internet-facing writable service. Put it behind HTTPS, keep the process unprivileged, set resource limits, back up the data directory, and review logs.
+It is still a writable service on the internet. Put it behind HTTPS, run it
+unprivileged with resource limits, back up the data directory and read the logs.
 
-## Configuration
+## Deploy
 
-| Environment variable | Default | Meaning |
-| --- | --- | --- |
-| `ADDR` | `:8080` | Listen address |
-| `DATA_DIR` | `./data` | Persistent state directory |
-| `SITE_NAME` | `Patrick's WWW Page` | Visible site title |
-| `BASE_URL` | `http://localhost:8080` | Absolute URL used by feeds/discovery |
-| `ADMIN_TOKEN` | unset | Bearer token for private observatory |
-| `OBSERVATORY_HMAC_KEY` | `local-dev-key` | Key used to pseudonymize remote addresses |
-| `MAX_WRITE_BYTES` | `65536` | Maximum write/upload size |
-| `WRITE_RATE_PER_HOUR` | `60` | Per-pseudonymous-source write limit |
-
-## Deploy behind Caddy
-
-See `Caddyfile.example`.
-
-The live Dozor instance deploys through Gitea CI. See the
-[deployment and rollback procedure](docs/DEPLOYMENT.md) for its backup gate,
-restricted app key and production checks.
+The `Dockerfile` builds a static binary on Alpine that runs as an unprivileged
+user with `/app/data` as a volume. `compose.yaml` runs it with a read-only root
+filesystem, dropped capabilities, a health check and log rotation, listening on
+loopback by default. Put a TLS reverse proxy in front; `Caddyfile.example` is a
+starting point (set `RELAY_HOSTNAME`, `RELAY_UPSTREAM` and `CADDY_EMAIL`).
 
 ```bash
-BASE_URL=https://www2.onnwee.me docker compose up -d --build
+BASE_URL=https://your.host docker compose up -d --build
 ```
 
 ## Research notes
 
-- `docs/BAIT-MATRIX.md` explains every passive discovery surface and what signal it can produce.
-- `docs/RESEARCH-GUARDRAILS.md` lists the deliberately excluded techniques that would muddy the experiment or create unnecessary risk.
-- `/reference/` contains webmaster-authored reference sheets linked from the homepage, text index, and sitemap. Their publication is recorded in `/reference/changes.txt`.
-- Mark operator trials explicitly and test writes in disposable local state. Recruited trials are separate from ambient discovery.
+- [docs/BAIT-MATRIX.md](docs/BAIT-MATRIX.md) explains each passive discovery
+  surface and what signal it can produce.
+- [docs/RESEARCH-GUARDRAILS.md](docs/RESEARCH-GUARDRAILS.md) lists the techniques
+  left out on purpose because they would muddy the results or add risk.
+- Mark your own test traffic, and test writes against disposable local state.
 
-## Tests
+## Project layout
 
-```bash
-go test ./...
-./scripts/demo.sh
+```text
+cmd/relay      the web server, routes and pages
+cmd/seed       imports content.md into a fresh data directory
+internal/      storage, rate limiting and credential screening
+web/           templates, static files and reference sheets
+scripts/       demo walk-through and image checks
 ```
 
-## Brand assets
+## Contributing
 
-The product identity and selected public exports are recorded in [the brand handoff](docs/brand/deadweb-relay/GUIDE.md) and [source hashes](docs/brand/deadweb-relay/export.json). Regenerate from SUBCULT Studio with `python3 studio/scripts/export_remaining_brand.py deadweb-relay /path/to/this/repository`; use `--check` to verify the export without writing.
+- Bugs and feature requests: [GitHub issues](https://github.com/subculture-collective/deadweb-relay/issues).
+- Questions and ideas: [GitHub Discussions](https://github.com/subculture-collective/deadweb-relay/discussions).
+- Code: open a pull request on GitHub against `main`. CI checks Go modules and
+  `go vet`, runs the tests, builds the server, and builds and smoke-tests the
+  container image.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
