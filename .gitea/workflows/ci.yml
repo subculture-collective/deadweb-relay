@@ -1,7 +1,6 @@
 name: CI
 'on':
   workflow_dispatch: {}
-  pull_request: {}
   push:
     branches:
     - main
@@ -10,7 +9,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Pull request verification runs on the GitHub mirror (.github/workflows/mirror-ci.yml);
+  # this workflow now only verifies and deploys main, so never cancel a deploy.
+  cancel-in-progress: false
 
 jobs:
   verify:
